@@ -5,6 +5,18 @@ import subprocess
 from pathlib import Path
 
 
+def setup_bundled_paths():
+    """Добавляет пути к встроенным бинарникам (FFmpeg и др.) в PATH.
+    Вызывать в начале app.py до любых проверок."""
+    if getattr(sys, 'frozen', False):
+        # Запущено из PyInstaller exe
+        exe_dir = Path(sys.executable).parent
+        internal_dir = exe_dir / "_internal"
+        for d in [exe_dir, internal_dir]:
+            if d.exists():
+                os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+
+
 SUPPORTED_AUDIO_EXTENSIONS = {
     ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".wma", ".aac", ".opus",
 }

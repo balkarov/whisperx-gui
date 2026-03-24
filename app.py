@@ -9,6 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 def main():
+    # Настраиваем пути к встроенным бинарникам (FFmpeg и др.)
+    from core.utils import setup_bundled_paths
+    setup_bundled_paths()
+
     # Проверяем зависимости перед запуском GUI
     missing = []
     try:
