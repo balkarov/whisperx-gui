@@ -53,6 +53,11 @@ COMPUTE_TYPES = ["float16", "float32", "int8"]
 CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home())) / "WhisperX-UI"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
+def is_model_cached(model_name: str) -> bool:
+    """Проверяет, есть ли модель в кеше HuggingFace."""
+    cache_dir = Path.home() / ".cache" / "huggingface" / "hub" / f"models--Systran--faster-whisper-{model_name}"
+    return cache_dir.exists()
+
 
 def get_config_dir() -> Path:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -67,7 +72,7 @@ def load_config() -> dict:
         "compute_type": "float16",
         "batch_size": 16,
         "task": "transcribe",
-        "diarize": False,
+        "diarize": True,
         "hf_token": "",
         "min_speakers": 1,
         "max_speakers": 10,

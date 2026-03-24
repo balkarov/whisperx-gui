@@ -17,6 +17,7 @@ from core.utils import (
     check_gpu_available,
     get_gpu_name,
     check_ffmpeg,
+    is_model_cached,
 )
 from core.transcriber import TranscriptionTask
 
@@ -158,15 +159,23 @@ class MainWindow(ctk.CTk):
         # Модель
         ctk.CTkLabel(model_frame, text="Модель:").grid(row=1, column=0, sticky="w", padx=10, pady=5)
         self.model_var = ctk.StringVar(value="medium")
-        self.model_combo = ctk.CTkComboBox(model_frame, values=WHISPER_MODELS, variable=self.model_var, width=160)
+        self.model_combo = ctk.CTkComboBox(
+            model_frame, values=WHISPER_MODELS, variable=self.model_var,
+            width=160, command=self._on_model_changed
+        )
         self.model_combo.grid(row=1, column=1, sticky="w", padx=5, pady=5)
 
+        self.model_hint_label = ctk.CTkLabel(
+            model_frame, text="(встроена)", text_color="green", font=ctk.CTkFont(size=11)
+        )
+        self.model_hint_label.grid(row=1, column=2, sticky="w", padx=5, pady=5)
+
         # Язык
-        ctk.CTkLabel(model_frame, text="Язык:").grid(row=1, column=2, sticky="w", padx=10, pady=5)
+        ctk.CTkLabel(model_frame, text="Язык:").grid(row=1, column=3, sticky="w", padx=10, pady=5)
         lang_display = [f"{code} — {name}" for code, name in LANGUAGES.items()]
         self.lang_var = ctk.StringVar(value="auto — Авто-определение")
         self.lang_combo = ctk.CTkComboBox(model_frame, values=lang_display, variable=self.lang_var, width=220)
-        self.lang_combo.grid(row=1, column=3, sticky="w", padx=5, pady=5)
+        self.lang_combo.grid(row=1, column=4, sticky="w", padx=5, pady=5)
 
         # Устройство
         ctk.CTkLabel(model_frame, text="Устройство:").grid(row=2, column=0, sticky="w", padx=10, pady=5)
@@ -209,6 +218,7 @@ class MainWindow(ctk.CTk):
         diarize_frame = ctk.CTkFrame(main_frame)
         diarize_frame.grid(row=row, column=0, sticky="ew", pady=(0, 10))
         diarize_frame.grid_columnconfigure(1, weight=1)
+        self.diarize_frame = diarize_frame
         row += 1
 
         ctk.CTkLabel(diarize_frame, text="Диаризация (определение спикеров)",
@@ -216,36 +226,52 @@ class MainWindow(ctk.CTk):
             row=0, column=0, columnspan=4, sticky="w", padx=10, pady=(10, 5)
         )
 
-        self.diarize_var = ctk.BooleanVar(value=False)
+        self.diarize_var = ctk.BooleanVar(value=True)
         self.diarize_check = ctk.CTkCheckBox(
             diarize_frame, text="Включить диаризацию", variable=self.diarize_var,
             command=self._toggle_diarize
         )
-        self.diarize_check.grid(row=1, column=0, columnspan=2, sticky="w", padx=10, pady=5)
+        self.diarize_check.grid(row=1, column=0, columnspan=4, sticky="w", padx=10, pady=5)
 
-        ctk.CTkLabel(diarize_frame, text="HuggingFace токен:").grid(row=2, column=0, sticky="w", padx=10, pady=5)
+        # Подсказка про токен
+        self.token_info_label = ctk.CTkLabel(
+            diarize_frame,
+            text="ℹ Укажите токен HuggingFace — он нужен для скачивания моделей (транскрипции и диаризации).",
+            font=ctk.CTkFont(size=12), text_color="gray60", wraplength=700, justify="left"
+        )
+        self.token_info_label.grid(row=2, column=0, columnspan=4, sticky="w", padx=10, pady=(5, 0))
+
+        # Токен
+        self.token_label = ctk.CTkLabel(diarize_frame, text="HuggingFace токен:")
+        self.token_label.grid(row=3, column=0, sticky="w", padx=10, pady=5)
         self.hf_token_entry = ctk.CTkEntry(diarize_frame, placeholder_text="hf_...", show="*", width=300)
-        self.hf_token_entry.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(5, 10), pady=5)
+        self.hf_token_entry.grid(row=3, column=1, columnspan=2, sticky="ew", padx=(5, 10), pady=5)
 
         self.show_token_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(diarize_frame, text="Показать", variable=self.show_token_var,
-                         command=self._toggle_token_visibility, width=80).grid(
-            row=2, column=3, sticky="w", padx=5, pady=5
-        )
+        self.show_token_check = ctk.CTkCheckBox(diarize_frame, text="Показать", variable=self.show_token_var,
+                         command=self._toggle_token_visibility, width=80)
+        self.show_token_check.grid(row=3, column=3, sticky="w", padx=5, pady=5)
 
-        ctk.CTkLabel(diarize_frame, text="Мин. спикеров:").grid(row=3, column=0, sticky="w", padx=10, pady=5)
+        # Спикеры
+        self.min_speakers_label = ctk.CTkLabel(diarize_frame, text="Мин. спикеров:")
+        self.min_speakers_label.grid(row=4, column=0, sticky="w", padx=10, pady=5)
         self.min_speakers_var = ctk.StringVar(value="1")
-        ctk.CTkEntry(diarize_frame, textvariable=self.min_speakers_var, width=60).grid(
-            row=3, column=1, sticky="w", padx=5, pady=5
-        )
+        self.min_speakers_entry = ctk.CTkEntry(diarize_frame, textvariable=self.min_speakers_var, width=60)
+        self.min_speakers_entry.grid(row=4, column=1, sticky="w", padx=5, pady=5)
 
-        ctk.CTkLabel(diarize_frame, text="Макс. спикеров:").grid(row=3, column=2, sticky="w", padx=10, pady=5)
+        self.max_speakers_label = ctk.CTkLabel(diarize_frame, text="Макс. спикеров:")
+        self.max_speakers_label.grid(row=4, column=2, sticky="w", padx=10, pady=5)
         self.max_speakers_var = ctk.StringVar(value="10")
-        ctk.CTkEntry(diarize_frame, textvariable=self.max_speakers_var, width=60).grid(
-            row=3, column=3, sticky="w", padx=5, pady=(5, 10)
-        )
+        self.max_speakers_entry = ctk.CTkEntry(diarize_frame, textvariable=self.max_speakers_var, width=60)
+        self.max_speakers_entry.grid(row=4, column=3, sticky="w", padx=5, pady=(5, 10))
 
-        self.diarize_widgets = [self.hf_token_entry, self.min_speakers_var, self.max_speakers_var]
+        # Список виджетов, которые скрываются при выключении диаризации
+        self._diarize_detail_widgets = [
+            self.token_info_label, self.token_label, self.hf_token_entry,
+            self.show_token_check, self.min_speakers_label, self.min_speakers_entry,
+            self.max_speakers_label, self.max_speakers_entry,
+        ]
+
         self._toggle_diarize()
 
         # === ВЫХОД ===
@@ -441,6 +467,7 @@ class MainWindow(ctk.CTk):
         if c.get("output_dir"):
             self.output_dir_entry.insert(0, c["output_dir"])
         self._toggle_diarize()
+        self._on_model_changed()
 
     def _save_settings(self):
         lang_str = self.lang_var.get()
@@ -462,9 +489,21 @@ class MainWindow(ctk.CTk):
         }
         save_config(config)
 
+    def _on_model_changed(self, model_name: str = None):
+        model = model_name or self.model_var.get()
+
+        if is_model_cached(model):
+            self.model_hint_label.configure(text="(в кеше)", text_color="green")
+        else:
+            self.model_hint_label.configure(text="(будет скачана)", text_color="orange")
+
     def _toggle_diarize(self):
-        state = "normal" if self.diarize_var.get() else "disabled"
-        self.hf_token_entry.configure(state=state)
+        if self.diarize_var.get():
+            for w in self._diarize_detail_widgets:
+                w.grid()
+        else:
+            for w in self._diarize_detail_widgets:
+                w.grid_remove()
 
     def _toggle_token_visibility(self):
         show = "" if self.show_token_var.get() else "*"
