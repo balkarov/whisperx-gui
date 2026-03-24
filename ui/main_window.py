@@ -37,8 +37,73 @@ class MainWindow(ctk.CTk):
         self.file_list: list[str] = []
 
         self._build_ui()
+        self._fix_keyboard_shortcuts()
         self._load_settings()
         self._check_environment()
+
+    def _fix_keyboard_shortcuts(self):
+        """Глобальный фикс Ctrl+V/C/A/X для работы в любой раскладке клавиатуры."""
+        def _on_key(event):
+            if not (event.state & 0x4):  # Ctrl не зажат
+                return
+            widget = self.focus_get()
+            if widget is None:
+                return
+
+            # keycode 86=V, 67=C, 65=A, 88=X — работают в любой раскладке
+            if event.keycode == 86:  # Ctrl+V (Paste)
+                try:
+                    text = self.clipboard_get()
+                    if isinstance(widget, (tk.Entry, tk.Text)):
+                        widget.insert("insert", text)
+                        return "break"
+                    elif hasattr(widget, "insert"):
+                        widget.insert("insert", text)
+                        return "break"
+                except tk.TclError:
+                    pass
+            elif event.keycode == 67:  # Ctrl+C (Copy)
+                try:
+                    if isinstance(widget, tk.Text):
+                        sel = widget.get("sel.first", "sel.last")
+                        self.clipboard_clear()
+                        self.clipboard_append(sel)
+                        return "break"
+                    elif isinstance(widget, tk.Entry):
+                        if widget.selection_present():
+                            sel = widget.selection_get()
+                            self.clipboard_clear()
+                            self.clipboard_append(sel)
+                            return "break"
+                except tk.TclError:
+                    pass
+            elif event.keycode == 65:  # Ctrl+A (Select All)
+                if isinstance(widget, tk.Text):
+                    widget.tag_add("sel", "1.0", "end")
+                    return "break"
+                elif isinstance(widget, tk.Entry):
+                    widget.select_range(0, "end")
+                    widget.icursor("end")
+                    return "break"
+            elif event.keycode == 88:  # Ctrl+X (Cut)
+                try:
+                    if isinstance(widget, tk.Text):
+                        sel = widget.get("sel.first", "sel.last")
+                        self.clipboard_clear()
+                        self.clipboard_append(sel)
+                        widget.delete("sel.first", "sel.last")
+                        return "break"
+                    elif isinstance(widget, tk.Entry):
+                        if widget.selection_present():
+                            sel = widget.selection_get()
+                            self.clipboard_clear()
+                            self.clipboard_append(sel)
+                            widget.delete("sel.first", "sel.last")
+                            return "break"
+                except tk.TclError:
+                    pass
+
+        self.bind_all("<Key>", _on_key)
 
     def _build_ui(self):
         # Основной скролл-фрейм
@@ -285,8 +350,8 @@ class MainWindow(ctk.CTk):
 
         # Только чтение: блокируем ввод, но разрешаем выделение/копирование/навигацию
         def _on_log_key(event):
-            # Ctrl+C, Ctrl+A — разрешаем
-            if event.state & 0x4 and event.keysym.lower() in ("c", "a"):
+            # Ctrl+комбинации — разрешаем (копировать, выделить, вставить не повредит)
+            if event.state & 0x4:
                 return
             # Навигация — разрешаем
             if event.keysym in ("Up", "Down", "Left", "Right", "Home", "End",
