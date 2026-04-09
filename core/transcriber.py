@@ -214,34 +214,6 @@ class TranscriptionTask:
             if self._cancelled:
                 return
 
-            # 5.1 Маппинг имён спикеров
-            speakers = set()
-            for seg in result.get("segments", []):
-                if seg.get("speaker"):
-                    speakers.add(seg["speaker"])
-
-            if speakers and self.on_speakers_found:
-                speakers_sorted = sorted(speakers)
-                self._log(f"Найдено спикеров: {len(speakers_sorted)}", 90)
-
-                # Запрашиваем маппинг у UI (блокирующий вызов через Event)
-                self._speaker_mapping_event = threading.Event()
-                self._speaker_mapping_result = {}
-                self.on_speakers_found(speakers_sorted)
-                # Ждём пока пользователь заполнит имена
-                self._speaker_mapping_event.wait()
-
-                if self._cancelled:
-                    return
-
-                mapping = self._speaker_mapping_result
-                if mapping:
-                    for seg in result.get("segments", []):
-                        sp = seg.get("speaker", "")
-                        if sp in mapping and mapping[sp]:
-                            seg["speaker"] = mapping[sp]
-                    self._log("Имена спикеров применены", 92)
-
             # 6. Сохранение
             self._log("Сохранение результатов...", 92)
             from pathlib import Path
@@ -255,6 +227,36 @@ class TranscriptionTask:
             base_path = str(out_dir / input_path.stem)
 
             saved_files = save_result(result, base_path, self.output_formats)
+
+            # 7. Маппинг имён спикеров (после сохранения — чтобы пользователь
+            #    мог открыть файл и понять кто есть кто)
+            speakers = set()
+            for seg in result.get("segments", []):
+                if seg.get("speaker"):
+                    speakers.add(seg["speaker"])
+
+            if speakers and self.on_speakers_found:
+                speakers_sorted = sorted(speakers)
+                self._log(f"Найдено спикеров: {len(speakers_sorted)}. "
+                          "Откройте файл, определите кто есть кто, и назначьте имена.", 95)
+
+                self._speaker_mapping_event = threading.Event()
+                self._speaker_mapping_result = {}
+                self.on_speakers_found(speakers_sorted)
+                self._speaker_mapping_event.wait()
+
+                if self._cancelled:
+                    return
+
+                mapping = self._speaker_mapping_result
+                if mapping:
+                    for seg in result.get("segments", []):
+                        sp = seg.get("speaker", "")
+                        if sp in mapping and mapping[sp]:
+                            seg["speaker"] = mapping[sp]
+                    # Перезаписываем файлы с новыми именами
+                    saved_files = save_result(result, base_path, self.output_formats)
+                    self._log("Файлы перезаписаны с именами спикеров", 98)
 
             self._log("Готово!", 100)
             self.on_complete(result, saved_files)

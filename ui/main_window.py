@@ -642,8 +642,10 @@ class MainWindow(ctk.CTk):
         ).pack(padx=20, pady=(20, 5))
 
         ctk.CTkLabel(
-            dialog, text="Оставьте пустым, чтобы сохранить исходное обозначение",
-            font=ctk.CTkFont(size=12), text_color="gray60"
+            dialog,
+            text="Файл уже сохранён — откройте его, посмотрите кто что говорил,\n"
+                 "затем введите имена. Оставьте пустым, чтобы не менять.",
+            font=ctk.CTkFont(size=12), text_color="gray60", justify="left"
         ).pack(padx=20, pady=(0, 15))
 
         # Скролл-фрейм для спикеров
