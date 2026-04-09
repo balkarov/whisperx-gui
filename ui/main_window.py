@@ -611,6 +611,7 @@ class MainWindow(ctk.CTk):
             on_progress=lambda msg, pct: self.after(0, self._on_progress, msg, pct),
             on_complete=lambda result, files: self.after(0, self._on_file_complete, result, files),
             on_error=lambda msg: self.after(0, self._on_error, msg),
+            on_speakers_found=lambda speakers: self.after(0, self._on_speakers_found, speakers),
         )
         self.current_task.start()
 
@@ -625,6 +626,70 @@ class MainWindow(ctk.CTk):
             self._log(f"  Сохранено: {f}")
         self._current_file_index += 1
         self._process_next_file()
+
+    def _on_speakers_found(self, speakers: list):
+        """Показывает диалог для ввода имён спикеров."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Имена спикеров")
+        dialog.geometry("450x400")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        ctk.CTkLabel(
+            dialog, text="Назначьте имена спикерам",
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).pack(padx=20, pady=(20, 5))
+
+        ctk.CTkLabel(
+            dialog, text="Оставьте пустым, чтобы сохранить исходное обозначение",
+            font=ctk.CTkFont(size=12), text_color="gray60"
+        ).pack(padx=20, pady=(0, 15))
+
+        # Скролл-фрейм для спикеров
+        scroll = ctk.CTkScrollableFrame(dialog, height=220)
+        scroll.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        scroll.grid_columnconfigure(1, weight=1)
+
+        entries = {}
+        for i, speaker in enumerate(speakers):
+            ctk.CTkLabel(scroll, text=f"{speaker}  →").grid(
+                row=i, column=0, sticky="w", padx=(10, 5), pady=5
+            )
+            entry = ctk.CTkEntry(scroll, placeholder_text="Имя спикера...")
+            entry.grid(row=i, column=1, sticky="ew", padx=(5, 10), pady=5)
+            entries[speaker] = entry
+
+        def on_apply():
+            mapping = {}
+            for speaker, entry in entries.items():
+                name = entry.get().strip()
+                if name:
+                    mapping[speaker] = name
+            self.current_task.set_speaker_mapping(mapping)
+            dialog.destroy()
+
+        def on_skip():
+            self.current_task.set_speaker_mapping({})
+            dialog.destroy()
+
+        def on_close():
+            on_skip()
+
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(0, 20))
+
+        ctk.CTkButton(
+            btn_frame, text="Применить", command=on_apply,
+            fg_color="#2d8a4e", hover_color="#236b3e", width=150
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            btn_frame, text="Пропустить", command=on_skip,
+            fg_color="gray30", hover_color="gray40", width=150
+        ).pack(side="left")
+
+        dialog.protocol("WM_DELETE_WINDOW", on_close)
 
     def _on_error(self, message: str):
         self._log(f"ОШИБКА: {message}")

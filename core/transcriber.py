@@ -1,5 +1,7 @@
 import gc
+import sys
 import threading
+import time
 import traceback
 from typing import Callable, Optional
 
@@ -28,6 +30,7 @@ class TranscriptionTask:
         on_progress: Optional[Callable[[str, float], None]] = None,
         on_complete: Optional[Callable[[dict, list], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
+        on_speakers_found: Optional[Callable[[list], dict]] = None,
     ):
         self.file_path = file_path
         self.model_name = model_name
@@ -46,6 +49,7 @@ class TranscriptionTask:
         self.on_progress = on_progress or (lambda msg, pct: None)
         self.on_complete = on_complete or (lambda result, files: None)
         self.on_error = on_error or (lambda msg: None)
+        self.on_speakers_found = on_speakers_found
         self._cancelled = False
         self._thread: Optional[threading.Thread] = None
 
@@ -56,6 +60,14 @@ class TranscriptionTask:
 
     def cancel(self):
         self._cancelled = True
+        # Разблокировать ожидание маппинга если отменено
+        if hasattr(self, '_speaker_mapping_event'):
+            self._speaker_mapping_event.set()
+
+    def set_speaker_mapping(self, mapping: dict):
+        """Вызывается из UI после заполнения имён спикеров."""
+        self._speaker_mapping_result = mapping
+        self._speaker_mapping_event.set()
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -74,7 +86,6 @@ class TranscriptionTask:
                 device = "cpu"
                 self._log("GPU не найден, используем CPU", 0)
 
-            # Подбираем compute_type для CPU
             compute_type = self.compute_type
             if device == "cpu" and compute_type == "float16":
                 compute_type = "float32"
@@ -82,12 +93,20 @@ class TranscriptionTask:
 
             # 1. Загрузка аудио
             self._log("Загрузка аудио...", 5)
+            t0 = time.time()
             audio = whisperx.load_audio(self.file_path)
+            duration_sec = len(audio) / 16000
+            self._log(f"Аудио загружено ({duration_sec:.0f} сек) за {time.time() - t0:.1f}с", 8)
             if self._cancelled:
                 return
 
-            # 2. Загрузка модели
+            # 2. Загрузка модели (с перехватом прогресса скачивания)
             self._log(f"Загрузка модели {self.model_name}...", 10)
+            t0 = time.time()
+
+            stderr_monitor = _StderrMonitor(self, phase="model", pct_range=(10, 20))
+            stderr_monitor.start()
+
             model = whisperx.load_model(
                 self.model_name,
                 device,
@@ -95,30 +114,45 @@ class TranscriptionTask:
                 language=self.language,
                 task=self.task,
             )
+
+            stderr_monitor.stop()
+            self._log(f"Модель загружена за {time.time() - t0:.1f}с", 20)
             if self._cancelled:
                 return
 
-            # 3. Транскрипция
+            # 3. Транскрипция с прогрессом через перехват tqdm
             self._log("Транскрипция...", 20)
+            t0 = time.time()
+
+            stderr_monitor = _StderrMonitor(self, phase="transcribe", pct_range=(20, 45))
+            stderr_monitor.start()
+
             result = model.transcribe(
                 audio,
                 batch_size=self.batch_size,
                 language=self.language,
             )
+
+            stderr_monitor.stop()
             detected_language = result.get("language", self.language or "en")
-            self._log(f"Язык: {detected_language}", 40)
+            n_segments = len(result.get("segments", []))
+            self._log(f"Транскрипция: {n_segments} сегментов, "
+                      f"язык: {detected_language}, за {time.time() - t0:.1f}с", 45)
             if self._cancelled:
                 return
 
-            # Освобождаем память от модели ASR
             del model
             gc.collect()
             if device == "cuda":
                 torch.cuda.empty_cache()
 
-            # 4. Выравнивание (alignment)
+            # 4. Выравнивание
             self._log("Выравнивание по словам...", 50)
+            t0 = time.time()
             try:
+                stderr_monitor = _StderrMonitor(self, phase="align", pct_range=(50, 65))
+                stderr_monitor.start()
+
                 align_model, align_metadata = whisperx.load_align_model(
                     language_code=detected_language, device=device
                 )
@@ -134,17 +168,25 @@ class TranscriptionTask:
                 gc.collect()
                 if device == "cuda":
                     torch.cuda.empty_cache()
+
+                stderr_monitor.stop()
+                self._log(f"Выравнивание завершено за {time.time() - t0:.1f}с", 65)
             except Exception as e:
-                self._log(f"Выравнивание не удалось ({e}), продолжаем без него", 55)
+                stderr_monitor.stop()
+                self._log(f"Выравнивание не удалось ({e}), продолжаем без него", 65)
 
             if self._cancelled:
                 return
 
             # 5. Диаризация
             if self.diarize and self.hf_token:
-                self._log("Диаризация (определение спикеров)...", 65)
+                self._log("Диаризация (определение спикеров)...", 68)
+                t0 = time.time()
                 try:
                     from whisperx.diarize import DiarizationPipeline
+
+                    stderr_monitor = _StderrMonitor(self, phase="diarize", pct_range=(68, 88))
+                    stderr_monitor.start()
 
                     diarize_model = DiarizationPipeline(
                         token=self.hf_token, device=device
@@ -155,22 +197,53 @@ class TranscriptionTask:
                         max_speakers=self.max_speakers,
                     )
                     result = whisperx.assign_word_speakers(diarize_segments, result)
-                    self._log("Диаризация завершена", 80)
+
+                    stderr_monitor.stop()
+                    self._log(f"Диаризация завершена за {time.time() - t0:.1f}с", 88)
                     del diarize_model
                     gc.collect()
                     if device == "cuda":
                         torch.cuda.empty_cache()
                 except Exception as e:
-                    self._log(f"Диаризация не удалась: {e}", 75)
-                    self._log(f"Traceback: {traceback.format_exc()}", 75)
+                    stderr_monitor.stop()
+                    self._log(f"Диаризация не удалась: {e}", 80)
+                    self._log(f"Traceback: {traceback.format_exc()}", 80)
             elif self.diarize and not self.hf_token:
-                self._log("Диаризация пропущена: не указан HuggingFace токен", 75)
+                self._log("Диаризация пропущена: не указан HuggingFace токен", 80)
 
             if self._cancelled:
                 return
 
-            # 6. Сохранение результатов
-            self._log("Сохранение результатов...", 85)
+            # 5.1 Маппинг имён спикеров
+            speakers = set()
+            for seg in result.get("segments", []):
+                if seg.get("speaker"):
+                    speakers.add(seg["speaker"])
+
+            if speakers and self.on_speakers_found:
+                speakers_sorted = sorted(speakers)
+                self._log(f"Найдено спикеров: {len(speakers_sorted)}", 90)
+
+                # Запрашиваем маппинг у UI (блокирующий вызов через Event)
+                self._speaker_mapping_event = threading.Event()
+                self._speaker_mapping_result = {}
+                self.on_speakers_found(speakers_sorted)
+                # Ждём пока пользователь заполнит имена
+                self._speaker_mapping_event.wait()
+
+                if self._cancelled:
+                    return
+
+                mapping = self._speaker_mapping_result
+                if mapping:
+                    for seg in result.get("segments", []):
+                        sp = seg.get("speaker", "")
+                        if sp in mapping and mapping[sp]:
+                            seg["speaker"] = mapping[sp]
+                    self._log("Имена спикеров применены", 92)
+
+            # 6. Сохранение
+            self._log("Сохранение результатов...", 92)
             from pathlib import Path
 
             input_path = Path(self.file_path)
@@ -189,3 +262,74 @@ class TranscriptionTask:
         except Exception as e:
             tb = traceback.format_exc()
             self.on_error(f"{e}\n\n{tb}")
+
+
+class _StderrMonitor:
+    """Перехватывает stderr для отслеживания прогресса tqdm (скачивание, батчи и т.д.)."""
+
+    def __init__(self, task: TranscriptionTask, phase: str, pct_range: tuple):
+        self.task = task
+        self.phase = phase
+        self.pct_min, self.pct_max = pct_range
+        self._original_stderr = None
+        self._last_pct_time = 0
+
+    def start(self):
+        self._original_stderr = sys.stderr
+        sys.stderr = _TeeWriter(sys.stderr, self._on_output)
+
+    def stop(self):
+        if self._original_stderr:
+            sys.stderr = self._original_stderr
+            self._original_stderr = None
+
+    def _on_output(self, text: str):
+        if self.task._cancelled:
+            return
+        now = time.time()
+        # Не спамим чаще чем раз в 0.5 сек
+        if now - self._last_pct_time < 0.5:
+            return
+
+        # tqdm выводит прогресс вида "  45%|████      | 3/7"
+        if "%" in text:
+            try:
+                pct_str = text.strip().split("%")[0].strip().split("\r")[-1].strip()
+                # Может быть "  45" или просто "45"
+                pct = int(pct_str)
+                if 0 <= pct <= 100:
+                    self._last_pct_time = now
+                    mapped = self.pct_min + int((self.pct_max - self.pct_min) * pct / 100)
+                    label = {
+                        "model": f"Загрузка модели: {pct}%",
+                        "transcribe": f"Транскрипция: {pct}%",
+                        "align": f"Выравнивание: {pct}%",
+                        "diarize": f"Диаризация: {pct}%",
+                    }.get(self.phase, f"{pct}%")
+                    self.task._log(label, mapped)
+            except (ValueError, IndexError):
+                pass
+
+
+class _TeeWriter:
+    """Перехватчик stderr: пишет в оригинал и вызывает callback."""
+
+    def __init__(self, original, callback):
+        self.original = original
+        self.callback = callback
+
+    def write(self, text):
+        if self.original:
+            self.original.write(text)
+        if text.strip():
+            try:
+                self.callback(text)
+            except Exception:
+                pass
+
+    def flush(self):
+        if self.original:
+            self.original.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.original, name)
